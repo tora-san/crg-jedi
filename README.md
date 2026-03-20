@@ -1,268 +1,200 @@
-<h1 align="center">code-review-graph</h1>
+<h1 align="center">crg-jedi</h1>
 
 <p align="center">
-  <strong>Stop burning tokens. Start reviewing smarter.</strong>
+  <strong>Code knowledge graph with real Python method resolution.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/tirth8205/code-review-graph/stargazers"><img src="https://img.shields.io/github/stars/tirth8205/code-review-graph?style=flat-square" alt="Stars"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT Licence"></a>
-  <a href="https://github.com/tirth8205/code-review-graph/actions/workflows/ci.yml"><img src="https://github.com/tirth8205/code-review-graph/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg?style=flat-square" alt="Python 3.10+"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-green.svg?style=flat-square" alt="MCP"></a>
-  <a href="#"><img src="https://img.shields.io/badge/version-1.8.2-purple.svg?style=flat-square" alt="v1.8.2"></a>
 </p>
 
-<br>
+---
 
-Claude Code re-reads your entire codebase on every task. `code-review-graph` fixes that. It builds a structural map of your code with [Tree-sitter](https://tree-sitter.github.io/tree-sitter/), tracks changes incrementally, and gives Claude precise context so it reads only what matters.
+> Built on [code-review-graph](https://github.com/tirth8205/code-review-graph) by [tirth8205](https://github.com/tirth8205).
 
-<p align="center">
-  <img src="diagrams/diagram1_before_vs_after.png" alt="The Token Problem: 6.8x fewer tokens with higher review quality" width="85%" />
-</p>
+## Why This Fork Exists
+
+The original `code-review-graph` builds excellent file-level dependency graphs using Tree-sitter, supporting 12+ languages. However, **Python function-level call graphs don't work** — `callers_of` and `callees_of` queries return empty results because Tree-sitter parses syntax but can't resolve `self.method()` calls without type information.
+
+This fork adds [jedi](https://github.com/davidhalter/jedi)-powered call resolution for Python. Jedi resolves method calls through mixin inheritance, cross-file imports, and re-exports — the same engine that powers Python autocomplete in editors like Vim and Emacs.
+
+### Before vs. After
+
+| Query | Original (Tree-sitter only) | crg-jedi (Tree-sitter + jedi) |
+|-------|---------------------------|-------------------------------|
+| `callers_of("MyClass.method")` | 0 results | 5+ callers across files |
+| `callees_of("MyClass.method")` | 0 results | Resolved downstream calls |
+| `tests_for("module.py")` | 0 results | Test files detected |
+| `imports_of("module.py")` | Module names (no detail) | Named imports |
+| Blast radius direction | Reverse only (importers) | Bidirectional (importers + imports) |
+| Git worktree support | Not supported | `CRG_DB_PATH` env var |
+
+### How Jedi Resolution Works
+
+```
+Tree-sitter (all languages)          Jedi (Python only)
+─────────────────────────            ──────────────────
+Parse AST → extract nodes       →   For each call site:
+  (functions, classes, imports)       jedi.Script.goto(line, col)
+                                      → resolves self.method()
+Create CALLS edges with              → traces through mixins
+  raw method names                    → follows cross-file imports
+  (e.g., "_evaluate_promotion")       → returns qualified definition
+                                  →   Replace raw edge target with
+                                      resolved qualified name
+```
+
+Non-Python files (TypeScript, Go, Rust, Java, etc.) continue using Tree-sitter-only resolution, which works well for statically-typed languages.
 
 ---
 
 ## Quick Start
 
-**Claude Code Plugin** (recommended)
-
 ```bash
-claude plugin marketplace add tirth8205/code-review-graph
-claude plugin install code-review-graph@code-review-graph
+pip install crg-jedi
+crg-jedi install    # registers MCP server in .mcp.json
 ```
 
-**pip**
-
-```bash
-pip install code-review-graph
-code-review-graph install
-```
-
-Restart Claude Code after either method. Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
-
-Then open your project and tell Claude:
+Restart Claude Code, then:
 
 ```
 Build the code review graph for this project
 ```
 
-The initial build takes ~10 seconds for a 500-file project. After that, the graph updates automatically on every file edit and git commit.
+Initial build takes ~10-15 seconds (includes jedi analysis for Python files). Incremental updates are < 2 seconds.
 
----
+### Git Worktree Support
 
-## How It Works
-
-Your repository is parsed into an AST with Tree-sitter, stored as a graph of nodes (functions, classes, imports) and edges (calls, inheritance, test coverage), then queried at review time to compute the minimal set of files Claude needs to read.
-
-<p align="center">
-  <img src="diagrams/diagram2_architecture_pipeline.png" alt="Architecture pipeline: Repository to Tree-sitter Parser to SQLite Graph to Blast Radius to Minimal Review Set" width="100%" />
-</p>
-
-<details>
-<summary><strong>Blast-radius analysis</strong></summary>
-<br>
-
-When a file changes, the graph traces every caller, dependent, and test that could be affected. This is the "blast radius" of the change. Claude reads only these files instead of scanning the whole project.
-
-<p align="center">
-  <img src="diagrams/diagram3_blast_radius.png" alt="Blast radius visualization showing how a change to login() propagates to callers, dependents, and tests" width="70%" />
-</p>
-
-</details>
-
-<details>
-<summary><strong>Incremental updates in &lt; 2 seconds</strong></summary>
-<br>
-
-On every git commit or file save, a hook fires. The graph diffs changed files, finds their dependents via SHA-256 hash checks, and re-parses only what changed. A 2,900-file project re-indexes in under 2 seconds.
-
-<p align="center">
-  <img src="diagrams/diagram4_incremental_update.png" alt="Incremental update flow: git commit triggers diff, finds dependents, re-parses only 5 files while 2,910 are skipped" width="90%" />
-</p>
-
-</details>
-
-<details>
-<summary><strong>12 supported languages</strong></summary>
-<br>
-
-Python, TypeScript, JavaScript, Go, Rust, Java, C#, Ruby, Kotlin, Swift, PHP, C/C++
-
-Each language has full Tree-sitter grammar support for functions, classes, imports, call sites, inheritance, and test detection.
-
-</details>
-
----
-
-## Benchmarks
-
-All figures come from real tests on three production open-source repositories.
-
-<p align="center">
-  <img src="diagrams/diagram5_benchmark_board.png" alt="Benchmarks: httpx 27.3x, FastAPI 6.3x, Next.js 4.9x token reduction with higher review quality" width="90%" />
-</p>
-
-<details>
-<summary><strong>Code review benchmark details (6.8x average reduction)</strong></summary>
-<br>
-
-Tested across 6 real git commits. The graph replaces reading entire source files with a compact structural summary (156-207 tokens) covering blast radius, test coverage gaps, and dependency chains.
-
-| Repo | Size | Standard Approach | With Graph | Reduction | Review Quality |
-|------|-----:|------------------:|-----------:|----------:|:-:|
-| [httpx](https://github.com/encode/httpx) | 125 files | 12,507 tokens | 458 tokens | 26.2x | 9.0 vs 7.0 |
-| [FastAPI](https://github.com/fastapi/fastapi) | 2,915 files | 5,495 tokens | 871 tokens | 8.1x | 8.5 vs 7.5 |
-| [Next.js](https://github.com/vercel/next.js) | 27,732 files | 21,614 tokens | 4,457 tokens | 6.0x | 9.0 vs 7.0 |
-| **Average** | | **13,205** | **1,928** | **6.8x** | **8.8 vs 7.2** |
-
-Standard approach: reading all changed files plus the diff. Quality scored on accuracy, completeness, bug-catching potential, and actionable insight (1-10 scale).
-
-</details>
-
-<details>
-<summary><strong>Live coding task details (14.1x average, 49x peak)</strong></summary>
-<br>
-
-An agent performed 6 real coding tasks (adding features, fixing bugs) across the same repositories. The graph directed it to the right files and away from everything else.
-
-| Task | Repo | With Graph | Without Graph | Reduction | Files Skipped |
-|------|------|--------:|-----------:|----------:|---:|
-| Add rate limiter | httpx | 14,090 | 64,666 | 4.6x | 58 |
-| Fix streaming bug | httpx | 14,090 | 64,666 | 4.6x | 59 |
-| Add rate limiter | FastAPI | 37,217 | 138,585 | 3.7x | 1,120 |
-| Fix streaming bug | FastAPI | 36,986 | 138,585 | 3.7x | 1,121 |
-| Add rate limiter | Next.js | 15,049 | 739,352 | 49.1x | ~16,000 |
-| Fix streaming bug | Next.js | 16,135 | 739,352 | 45.8x | ~16,000 |
-
-The graph identified the correct files in every case. Savings scale with repository size.
-
-</details>
-
-<details>
-<summary><strong>Monorepo scale: the 49x case</strong></summary>
-<br>
-
-Large repositories benefit most. In the Next.js monorepo (27,732 files, 739K tokens), the graph narrows the review context to ~15 files and 15K tokens, a 49x reduction with 27,700+ files excluded entirely.
-
-<p align="center">
-  <img src="diagrams/diagram6_monorepo_funnel.png" alt="Next.js monorepo: 27,732 files funneled down to ~15 files, 49x fewer tokens" width="75%" />
-</p>
-
-</details>
-
----
-
-## Usage
-
-<details>
-<summary><strong>Slash commands</strong></summary>
-<br>
-
-| Command | Description |
-|---------|-------------|
-| `/code-review-graph:build-graph` | Build or rebuild the code graph |
-| `/code-review-graph:review-delta` | Review changes since last commit |
-| `/code-review-graph:review-pr` | Full PR review with blast-radius analysis |
-
-</details>
-
-<details>
-<summary><strong>CLI reference</strong></summary>
-<br>
+If you use git worktrees, point all worktrees to a shared graph:
 
 ```bash
-code-review-graph install     # Register MCP server with Claude Code
-code-review-graph build       # Parse entire codebase
-code-review-graph update      # Incremental update (changed files only)
-code-review-graph status      # Graph statistics
-code-review-graph watch       # Auto-update on file changes
-code-review-graph visualize   # Generate interactive HTML graph
-code-review-graph serve       # Start MCP server
+# In your .mcp.json, add env override:
+{
+  "mcpServers": {
+    "crg-jedi": {
+      "command": "uvx",
+      "args": ["crg-jedi", "serve"],
+      "env": {
+        "CRG_DB_PATH": "/path/to/main/repo/.code-review-graph"
+      }
+    }
+  }
+}
 ```
 
-</details>
+---
 
-<details>
-<summary><strong>MCP tools</strong></summary>
-<br>
+## MCP Tools
 
-Claude uses these automatically once the graph is built.
+### Core Tools (always loaded)
 
 | Tool | Description |
 |------|-------------|
-| `build_or_update_graph_tool` | Build or incrementally update the graph |
-| `get_impact_radius_tool` | Blast radius of changed files |
-| `get_review_context_tool` | Token-optimised review context with structural summary |
-| `query_graph_tool` | Callers, callees, tests, imports, inheritance queries |
-| `semantic_search_nodes_tool` | Search code entities by name or meaning |
+| `build_or_update_graph_tool` | Full or incremental graph build |
+| `get_impact_radius_tool` | Blast radius analysis of changed files |
+| `query_graph_tool` | Predefined queries: `callers_of`, `callees_of`, `imports_of`, `importers_of`, `children_of`, `tests_for`, `inheritors_of`, `file_summary` |
+| `get_review_context_tool` | Token-optimized review context with guidance |
+| `semantic_search_nodes_tool` | Search by name or semantic similarity |
+| `list_graph_stats_tool` | Graph statistics |
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
-| `list_graph_stats_tool` | Graph size and health |
-| `get_docs_section_tool` | Retrieve documentation sections |
+| `get_docs_section_tool` | Documentation retrieval |
+| `run_extension` | Run analysis extensions (see below) |
 
-</details>
+### Extensions (lazy-loaded via `run_extension`)
+
+Extensions are loaded on demand — zero token overhead until you use them.
+
+```
+run_extension(name="help")  →  list all available extensions
+run_extension(name="dead_code")  →  find functions with no callers
+```
+
+| Extension | Description |
+|-----------|-------------|
+| `dead_code` | Find functions with no incoming CALLS edges |
+| `test_gaps` | Find functions missing test coverage (direct or transitive) |
+| `coupling` | Fan-in/fan-out metrics and instability scores |
+| `cycles` | Circular import dependency detection |
+| `change_risk` | Risk scoring: graph coupling × git churn × blast radius |
+| `unused_imports` | Find imports with no downstream usage |
+| `breaking_changes` | Detect signature changes and flag affected callers |
+| `api_surface` | Map public interfaces (functions imported by other modules) |
+| `dep_depth` | Dependency depth — longest import chain analysis |
+| `multi_project` | Auto-detect Python subprojects for jedi scoping |
+| `graph_diff` | Structural diff between git refs |
+| `ts_resolver` | TypeScript call resolution (placeholder — Tree-sitter handles TS well) |
 
 ---
 
-## Features
+## Supported Languages
 
-| Feature | Details |
-|---------|---------|
-| **Incremental updates** | Re-parses only changed files. Subsequent updates complete in under 2 seconds. |
-| **12 languages** | Python, TypeScript, JavaScript, Go, Rust, Java, C#, Ruby, Kotlin, Swift, PHP, C/C++ |
-| **Blast-radius analysis** | Shows exactly which functions, classes, and files are affected by any change |
-| **Auto-update hooks** | Graph updates on every file edit and git commit without manual intervention |
-| **Semantic search** | Optional vector embeddings via sentence-transformers |
-| **Interactive visualisation** | D3.js force-directed graph with edge-type toggles and search |
-| **Local storage** | SQLite file in `.code-review-graph/`. No external database, no cloud dependency. |
-| **Watch mode** | Continuous graph updates as you work |
+All 12+ languages from the original are supported. Jedi enhances Python specifically.
 
-<details>
-<summary><strong>Configuration</strong></summary>
-<br>
+| Language | Parsing | Call Resolution |
+|----------|---------|----------------|
+| **Python** | Tree-sitter | Tree-sitter + **jedi** |
+| TypeScript/JavaScript/TSX | Tree-sitter | Tree-sitter |
+| Go | Tree-sitter | Tree-sitter |
+| Rust | Tree-sitter | Tree-sitter |
+| Java | Tree-sitter | Tree-sitter |
+| C# | Tree-sitter | Tree-sitter |
+| C/C++ | Tree-sitter | Tree-sitter |
+| Ruby | Tree-sitter | Tree-sitter |
+| Kotlin | Tree-sitter | Tree-sitter |
+| Swift | Tree-sitter | Tree-sitter |
+| PHP | Tree-sitter | Tree-sitter |
 
-To exclude paths from indexing, create a `.code-review-graphignore` file in your repository root:
+---
+
+## Configuration
+
+### `.code-review-graphignore`
+
+Exclude paths from indexing (same syntax as `.gitignore`):
 
 ```
-generated/**
-*.generated.ts
-vendor/**
 node_modules/**
+.venv/**
+__pycache__/**
+*.generated.ts
 ```
 
-For semantic search, install the optional embeddings dependencies:
+### Environment Variables
 
-```bash
-pip install code-review-graph[embeddings]
-```
-
-</details>
+| Variable | Description |
+|----------|-------------|
+| `CRG_DB_PATH` | Override graph database location (for worktrees) |
+| `NO_COLOR` | Disable colored CLI output |
 
 ---
 
-## Contributing
+## Development
 
 ```bash
-git clone https://github.com/tirth8205/code-review-graph.git
-cd code-review-graph
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+git clone https://github.com/tora-san/crg-jedi.git
+cd crg-jedi
+uv venv && uv pip install -e ".[dev]"
 pytest
 ```
 
-<details>
-<summary><strong>Adding a new language</strong></summary>
-<br>
+### Syncing with upstream
 
-Edit `code_review_graph/parser.py` and add your extension to `EXTENSION_TO_LANGUAGE` along with node type mappings in `_CLASS_TYPES`, `_FUNCTION_TYPES`, `_IMPORT_TYPES`, and `_CALL_TYPES`. Include a test fixture and open a PR.
+```bash
+git remote add upstream https://github.com/tirth8205/code-review-graph.git
+git fetch upstream
+git merge upstream/main
+```
 
-</details>
+---
 
-## Licence
+## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — same as the original. See [LICENSE](LICENSE).
 
-<p align="center">
-<br>
-<code>pip install code-review-graph && code-review-graph install</code>
-</p>
+## Credits
+
+- Original [code-review-graph](https://github.com/tirth8205/code-review-graph) by [tirth8205](https://github.com/tirth8205) — the Tree-sitter parsing, SQLite graph engine, MCP server, and core tools
+- [jedi](https://github.com/davidhalter/jedi) by David Halter — Python static analysis powering the call resolution
+- This fork by [tora-san](https://github.com/tora-san) — jedi integration, bug fixes, extensions, worktree support

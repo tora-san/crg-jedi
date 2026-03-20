@@ -11,9 +11,12 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import tree_sitter_language_pack as tslp
+
+if TYPE_CHECKING:
+    from .jedi_resolver import JediResolver
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +215,92 @@ class CodeParser:
         except (OSError, PermissionError):
             return [], []
         return self.parse_bytes(path, source)
+
+    def parse_file_with_jedi(
+        self,
+        path: Path,
+        jedi_resolver: Optional['JediResolver'] = None,
+    ) -> tuple[list[NodeInfo], list[EdgeInfo]]:
+        """Parse a file, optionally enhancing CALLS edges with jedi resolution."""
+        try:
+            source = path.read_bytes()
+        except (OSError, PermissionError):
+            return [], []
+
+        nodes, edges = self.parse_bytes(path, source)
+
+        # If jedi resolver available and this is a Python file, enhance CALLS edges
+        if jedi_resolver and self.detect_language(path) == "python":
+            edges = self._enhance_calls_with_jedi(path, source, nodes, edges, jedi_resolver)
+
+        return nodes, edges
+
+    def _enhance_calls_with_jedi(
+        self,
+        path: Path,
+        source: bytes,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        jedi_resolver: 'JediResolver',
+    ) -> list[EdgeInfo]:
+        """Replace raw CALLS edges with jedi-resolved qualified edges."""
+        from .jedi_resolver import CallSite
+
+        # Collect call sites from existing CALLS edges
+        call_sites = []
+        non_call_edges = []
+
+        for edge in edges:
+            if edge.kind == "CALLS":
+                call_sites.append(CallSite(
+                    caller_qualified_name=edge.source,
+                    raw_call_name=edge.target,
+                    line=edge.line,
+                    column=0,  # We'll search for the call name on this line
+                    file_path=str(path),
+                ))
+            else:
+                non_call_edges.append(edge)
+
+        if not call_sites:
+            return edges
+
+        # Resolve column positions by finding the call name in the source line
+        lines = source.decode("utf-8", errors="replace").splitlines()
+        for site in call_sites:
+            if 0 < site.line <= len(lines):
+                line_text = lines[site.line - 1]
+                col = line_text.find(site.raw_call_name)
+                if col >= 0:
+                    site.column = col
+
+        # Resolve with jedi
+        resolved = jedi_resolver.resolve_calls(str(path), call_sites)
+
+        # Create new CALLS edges from resolved results
+        resolved_edges = []
+        for r in resolved:
+            resolved_edges.append(EdgeInfo(
+                kind="CALLS",
+                source=r.source_qualified,
+                target=r.target_qualified,
+                file_path=str(path),
+                line=r.line,
+            ))
+
+        # Keep unresolved calls as-is (better than nothing)
+        resolved_sources = {(r.source_qualified, r.line) for r in resolved}
+        for site in call_sites:
+            if (site.caller_qualified_name, site.line) not in resolved_sources:
+                non_call_edges.append(EdgeInfo(
+                    kind="CALLS",
+                    source=site.caller_qualified_name,
+                    target=site.raw_call_name,
+                    file_path=str(path),
+                    line=site.line,
+                ))
+
+        return non_call_edges + resolved_edges
 
     def parse_bytes(self, path: Path, source: bytes) -> tuple[list[NodeInfo], list[EdgeInfo]]:
         """Parse pre-read bytes and return extracted nodes and edges.

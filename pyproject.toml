@@ -3,16 +3,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "code-review-graph"
+name = "crg-jedi"
 version = "1.8.2"
-description = "Persistent incremental knowledge graph for token-efficient, context-aware code reviews with Claude Code"
+description = "Enhanced code knowledge graph with jedi-powered Python call resolution — fork of code-review-graph"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Tirth" },
+    { name = "Tsuchinoko" },
 ]
-keywords = ["code-review", "knowledge-graph", "tree-sitter", "claude-code", "mcp"]
+keywords = ["code-review", "knowledge-graph", "tree-sitter", "claude-code", "mcp", "jedi"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -31,9 +32,11 @@ dependencies = [
     "tree-sitter-language-pack>=0.3.0,<1",
     "networkx>=3.2,<4",
     "watchdog>=4.0.0,<6",
+    "jedi>=0.19.0,<1",
 ]
 
 [project.scripts]
+crg-jedi = "code_review_graph.cli:main"
 code-review-graph = "code_review_graph.cli:main"
 
 [project.optional-dependencies]

@@ -207,6 +207,51 @@ def get_docs_section_tool(
     return get_docs_section(section_name=section_name)
 
 
+@mcp.tool()
+def run_extension_tool(
+    name: str,
+    args: Optional[str] = None,
+) -> dict:
+    """Run an analysis extension by name.
+
+    Extensions provide additional analysis capabilities beyond the core
+    graph tools. Call with name="help" to list available extensions.
+
+    Args:
+        name: Extension name (e.g. "dead_code", "coupling") or "help" for list.
+        args: JSON string of arguments for the extension. Optional.
+    """
+    import json as _json
+
+    from .extensions import get_extension, list_extensions
+
+    if name == "help":
+        return {
+            "status": "ok",
+            "extensions": list_extensions(),
+        }
+
+    ext_fn = get_extension(name)
+    if ext_fn is None:
+        available = list_extensions()
+        return {
+            "status": "error",
+            "error": f"Unknown extension '{name}'. Available: {[e['name'] for e in available]}",
+        }
+
+    parsed_args = {}
+    if args:
+        try:
+            parsed_args = _json.loads(args)
+        except _json.JSONDecodeError as e:
+            return {"status": "error", "error": f"Invalid JSON args: {e}"}
+
+    try:
+        return ext_fn(**parsed_args)
+    except Exception as e:
+        return {"status": "error", "error": f"Extension '{name}' failed: {e}"}
+
+
 def main() -> None:
     """Run the MCP server via stdio."""
     mcp.run(transport="stdio")

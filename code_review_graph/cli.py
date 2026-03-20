@@ -34,9 +34,12 @@ from pathlib import Path
 def _get_version() -> str:
     """Get the installed package version."""
     try:
-        return pkg_version("code-review-graph")
+        return pkg_version("crg-jedi")
     except Exception:
-        return "dev"
+        try:
+            return pkg_version("code-review-graph")
+        except Exception:
+            return "dev"
 
 
 def _supports_color() -> bool:
@@ -95,9 +98,9 @@ def _handle_init(args: argparse.Namespace) -> None:
 
     mcp_config = {
         "mcpServers": {
-            "code-review-graph": {
+            "crg-jedi": {
                 "command": "uvx",
-                "args": ["code-review-graph", "serve"],
+                "args": ["crg-jedi", "serve"],
             }
         }
     }
@@ -106,7 +109,7 @@ def _handle_init(args: argparse.Namespace) -> None:
     if mcp_path.exists():
         try:
             existing = json.loads(mcp_path.read_text())
-            if "code-review-graph" in existing.get("mcpServers", {}):
+            if "crg-jedi" in existing.get("mcpServers", {}):
                 print(f"Already configured in {mcp_path}")
                 return
             existing.setdefault("mcpServers", {}).update(mcp_config["mcpServers"])
@@ -213,6 +216,7 @@ def main() -> None:
         incremental_update,
         watch,
     )
+    from .jedi_resolver import JediResolver, JEDI_AVAILABLE
 
     if args.command == "update":
         # update requires git for diffing
@@ -227,18 +231,37 @@ def main() -> None:
     db_path = get_db_path(repo_root)
     store = GraphStore(db_path)
 
+    # Create jedi resolver for Python call resolution
+    jedi_resolver = None
+    if JEDI_AVAILABLE:
+        try:
+            # Look for Python project markers in subdirectories
+            for d in [repo_root] + [p for p in repo_root.iterdir() if p.is_dir()]:
+                for marker in ("pyproject.toml", "setup.py", "setup.cfg"):
+                    if (d / marker).exists() and d != repo_root:
+                        jedi_resolver = JediResolver(d)
+                        break
+                if jedi_resolver:
+                    break
+            if not jedi_resolver:
+                jedi_resolver = JediResolver(repo_root)
+        except Exception as e:
+            logging.warning("Jedi resolver init failed (continuing without): %s", e)
+
     try:
         if args.command == "build":
-            result = full_build(repo_root, store)
+            result = full_build(repo_root, store, jedi_resolver=jedi_resolver)
             print(
                 f"Full build: {result['files_parsed']} files, "
                 f"{result['total_nodes']} nodes, {result['total_edges']} edges"
             )
+            if jedi_resolver:
+                print("  (jedi-enhanced Python call resolution active)")
             if result["errors"]:
                 print(f"Errors: {len(result['errors'])}")
 
         elif args.command == "update":
-            result = incremental_update(repo_root, store, base=args.base)
+            result = incremental_update(repo_root, store, base=args.base, jedi_resolver=jedi_resolver)
             print(
                 f"Incremental: {result['files_updated']} files updated, "
                 f"{result['total_nodes']} nodes, {result['total_edges']} edges"

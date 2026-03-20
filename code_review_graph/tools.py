@@ -14,7 +14,7 @@ Exposes 8 tools:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .embeddings import EmbeddingStore, embed_all_nodes, semantic_search
 from .graph import GraphStore, edge_to_dict, node_to_dict
@@ -26,6 +26,7 @@ from .incremental import (
     get_staged_and_unstaged,
     incremental_update,
 )
+from .jedi_resolver import JEDI_AVAILABLE, JediResolver
 
 
 def _validate_repo_root(path: Path) -> Path:
@@ -55,6 +56,23 @@ def _get_store(repo_root: str | None = None) -> tuple[GraphStore, Path]:
     return GraphStore(db_path), root
 
 
+def _get_jedi_resolver(root: Path) -> Optional[JediResolver]:
+    """Create a JediResolver if jedi is available."""
+    if not JEDI_AVAILABLE:
+        return None
+    try:
+        # Look for Python project markers
+        for marker in ("pyproject.toml", "setup.py", "setup.cfg"):
+            if (root / marker).exists():
+                return JediResolver(root)
+            for d in root.iterdir():
+                if d.is_dir() and (d / marker).exists():
+                    return JediResolver(d)
+        return JediResolver(root)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: build_or_update_graph
 # ---------------------------------------------------------------------------
@@ -78,8 +96,9 @@ def build_or_update_graph(
     """
     store, root = _get_store(repo_root)
     try:
+        jedi_resolver = _get_jedi_resolver(root)
         if full_rebuild:
-            result = full_build(root, store)
+            result = full_build(root, store, jedi_resolver=jedi_resolver)
             return {
                 "status": "ok",
                 "build_type": "full",
@@ -90,7 +109,7 @@ def build_or_update_graph(
                 **result,
             }
         else:
-            result = incremental_update(root, store, base=base)
+            result = incremental_update(root, store, base=base, jedi_resolver=jedi_resolver)
             if result["files_updated"] == 0:
                 return {
                     "status": "ok",
