@@ -286,7 +286,8 @@ class GraphStore:
     # --- Impact / Graph traversal ---
 
     def get_impact_radius(
-        self, changed_files: list[str], max_depth: int = 2, max_nodes: int = 500
+        self, changed_files: list[str], max_depth: int = 2, max_nodes: int = 500,
+        max_edges: int = 1000,
     ) -> dict[str, Any]:
         """BFS from changed files to find all impacted nodes within depth N.
 
@@ -350,15 +351,23 @@ class GraphStore:
 
         # Collect relevant edges in a single batch query
         relevant_edges = []
+        truncated = False
+        total_edge_count = 0
         all_qns = seeds | impacted
         if all_qns:
             relevant_edges = self.get_edges_among(all_qns)
+            total_edge_count = len(relevant_edges)
+            if total_edge_count > max_edges:
+                relevant_edges = relevant_edges[:max_edges]
+                truncated = True
 
         return {
             "changed_nodes": changed_nodes,
             "impacted_nodes": impacted_nodes,
             "impacted_files": impacted_files,
             "edges": relevant_edges,
+            "truncated": truncated,
+            "total_edge_count": total_edge_count,
         }
 
     def get_subgraph(self, qualified_names: list[str]) -> dict[str, Any]:

@@ -173,18 +173,75 @@ def get_impact_radius(
 
         # Convert to absolute paths for graph lookup
         abs_files = [str(root / f) for f in changed_files]
-        result = store.get_impact_radius(abs_files, max_depth=max_depth)
+        max_edges = 200
+        result = store.get_impact_radius(
+            abs_files, max_depth=max_depth, max_edges=max_edges
+        )
 
-        changed_dicts = [node_to_dict(n) for n in result["changed_nodes"]]
-        impacted_dicts = [node_to_dict(n) for n in result["impacted_nodes"]]
-        edge_dicts = [edge_to_dict(e) for e in result["edges"]]
+        # Strip repo root prefix from all paths to keep response compact.
+        root_prefix = str(root) + "/"
 
+        def _compact_dict(d: dict) -> dict:
+            """Strip absolute repo root from path-like values."""
+            out = {}
+            for k, v in d.items():
+                if isinstance(v, str) and v.startswith(root_prefix):
+                    out[k] = v[len(root_prefix):]
+                else:
+                    out[k] = v
+            return out
+
+        changed_dicts = [_compact_dict(node_to_dict(n)) for n in result["changed_nodes"]]
+        total_impacted = len(result["impacted_nodes"])
+        total_edges = result.get("total_edge_count", len(result["edges"]))
+        edge_truncated = result.get("truncated", False)
+
+        # Cap output to avoid MCP response explosion on hub files.
+        max_nodes_output = 50
+        nodes_truncated = total_impacted > max_nodes_output
+        if nodes_truncated:
+            impacted_dicts = [
+                _compact_dict(node_to_dict(n))
+                for n in result["impacted_nodes"][:max_nodes_output]
+            ]
+        else:
+            impacted_dicts = [
+                _compact_dict(node_to_dict(n)) for n in result["impacted_nodes"]
+            ]
+
+        edge_dicts = [_compact_dict(edge_to_dict(e)) for e in result["edges"]]
+
+        # Make impacted_files relative and cap count
+        all_impacted_files = [
+            f[len(root_prefix):] if f.startswith(root_prefix) else f
+            for f in result["impacted_files"]
+        ]
+        max_files_output = 100
+        files_truncated = len(all_impacted_files) > max_files_output
+        rel_impacted_files = all_impacted_files[:max_files_output]
+
+        total_files = len(all_impacted_files)
         summary_parts = [
             f"Blast radius for {len(changed_files)} changed file(s):",
             f"  - {len(changed_dicts)} nodes directly changed",
-            f"  - {len(impacted_dicts)} nodes impacted (within {max_depth} hops)",
-            f"  - {len(result['impacted_files'])} additional files affected",
+            f"  - {total_impacted} nodes impacted (within {max_depth} hops)",
+            f"  - {total_files} additional files affected",
         ]
+        if nodes_truncated:
+            summary_parts.append(
+                f"  - nodes truncated: showing {max_nodes_output} of "
+                f"{total_impacted} impacted nodes"
+            )
+        if files_truncated:
+            summary_parts.append(
+                f"  - files truncated: showing {max_files_output} of "
+                f"{total_files} impacted files"
+            )
+        if edge_truncated:
+            summary_parts.append(
+                f"  - edges truncated: showing {len(edge_dicts)} of "
+                f"{total_edges} total edges"
+            )
 
         return {
             "status": "ok",
@@ -192,8 +249,12 @@ def get_impact_radius(
             "changed_files": changed_files,
             "changed_nodes": changed_dicts,
             "impacted_nodes": impacted_dicts,
-            "impacted_files": result["impacted_files"],
+            "impacted_files": rel_impacted_files,
             "edges": edge_dicts,
+            "truncated": nodes_truncated or edge_truncated or files_truncated,
+            "total_impacted_nodes": total_impacted,
+            "total_impacted_files": total_files,
+            "total_edge_count": total_edges,
         }
     finally:
         store.close()

@@ -210,7 +210,7 @@ def get_docs_section_tool(
 @mcp.tool()
 def run_extension_tool(
     name: str,
-    args: Optional[str] = None,
+    args: Optional[str | dict] = None,
 ) -> dict:
     """Run an analysis extension by name.
 
@@ -219,7 +219,7 @@ def run_extension_tool(
 
     Args:
         name: Extension name (e.g. "dead_code", "coupling") or "help" for list.
-        args: JSON string of arguments for the extension. Optional.
+        args: JSON string or dict of arguments for the extension. Optional.
     """
     import json as _json
 
@@ -241,10 +241,13 @@ def run_extension_tool(
 
     parsed_args = {}
     if args:
-        try:
-            parsed_args = _json.loads(args)
-        except _json.JSONDecodeError as e:
-            return {"status": "error", "error": f"Invalid JSON args: {e}"}
+        if isinstance(args, dict):
+            parsed_args = args
+        else:
+            try:
+                parsed_args = _json.loads(args)
+            except (_json.JSONDecodeError, TypeError) as e:
+                return {"status": "error", "error": f"Invalid JSON args: {e}"}
 
     try:
         return ext_fn(**parsed_args)
