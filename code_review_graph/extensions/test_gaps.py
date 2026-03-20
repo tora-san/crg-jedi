@@ -27,28 +27,38 @@ def run(repo_root: str | None = None, min_lines: int = 3, **kwargs) -> dict:
             # Skip __init__ and dunder methods
             if node.name.startswith("__") and node.name.endswith("__"):
                 continue
-
-            # Check for direct TESTED_BY
-            tested_edges = [
-                e for e in store.get_edges_by_target(node.qualified_name)
-                if e.kind == "TESTED_BY"
-            ]
-            if tested_edges:
+            # Skip helper functions defined inside test files
+            if "/tests/" in node.file_path or "/test_" in node.file_path:
                 continue
 
-            # Check for transitive: any caller has TESTED_BY?
-            callers = [
-                e for e in store.get_edges_by_target(node.qualified_name)
-                if e.kind == "CALLS"
-            ]
+            # Check for direct test coverage: TESTED_BY edges or CALLS from test nodes
+            incoming = store.get_edges_by_target(node.qualified_name)
+            directly_tested = any(
+                e.kind == "TESTED_BY" or (
+                    e.kind == "CALLS" and (
+                        caller := store.get_node(e.source_qualified)
+                    ) is not None and caller.is_test
+                )
+                for e in incoming
+            )
+            if directly_tested:
+                continue
+
+            # Check for transitive: any non-test caller is itself called by a test?
+            callers = [e for e in incoming if e.kind == "CALLS"]
             transitively_tested = False
             for caller_edge in callers:
-                caller_tests = [
-                    e for e in store.get_edges_by_target(caller_edge.source_qualified)
-                    if e.kind == "TESTED_BY"
-                ]
-                if caller_tests:
-                    transitively_tested = True
+                caller_incoming = store.get_edges_by_target(caller_edge.source_qualified)
+                for e in caller_incoming:
+                    if e.kind == "TESTED_BY":
+                        transitively_tested = True
+                        break
+                    if e.kind == "CALLS":
+                        c = store.get_node(e.source_qualified)
+                        if c and c.is_test:
+                            transitively_tested = True
+                            break
+                if transitively_tested:
                     break
 
             if not transitively_tested:

@@ -413,6 +413,73 @@ class GraphStore:
             last_updated=last_updated,
         )
 
+    # --- Module resolution ---
+
+    def resolve_module_to_files(self, module_path: str) -> list[tuple[str, str]]:
+        """Convert a Python module path to file paths that import from it.
+
+        IMPORTS_FROM edges store module-style targets (e.g. 'medusa.actors.executor').
+        This method finds all edges whose target matches a file-derived module path,
+        enabling ``importers_of`` lookups by file path.
+
+        Returns a list of source file paths that import the given module.
+        """
+        # Build a module path from a file path
+        # e.g., /abs/path/medusa/medusa/actors/executor.py -> medusa.actors.executor
+        # The edges already store the module path as target_qualified.
+        # We can search with LIKE for partial matches.
+        rows = self._conn.execute(
+            "SELECT DISTINCT source_qualified, file_path FROM edges "
+            "WHERE kind = 'IMPORTS_FROM' AND target_qualified = ?",
+            (module_path,),
+        ).fetchall()
+        return [(r["source_qualified"], r["file_path"]) for r in rows]
+
+    def file_path_to_module(self, file_path: str, repo_root: str) -> list[str]:
+        """Convert a file path to possible Python module paths.
+
+        For 'medusa/medusa/actors/executor.py' relative to repo root, generates:
+        - medusa.medusa.actors.executor
+        - medusa.actors.executor
+        - actors.executor
+        - executor
+        """
+        from pathlib import Path as _P
+        rel = str(_P(file_path).relative_to(repo_root))
+        # Strip .py and __init__
+        rel = rel.replace("/", ".").replace("\\", ".")
+        if rel.endswith(".__init__.py"):
+            rel = rel[:-len(".__init__.py")]
+        elif rel.endswith(".py"):
+            rel = rel[:-3]
+
+        parts = rel.split(".")
+        candidates = []
+        for i in range(len(parts)):
+            candidates.append(".".join(parts[i:]))
+        return candidates
+
+    def get_importers_of_file(self, file_path: str, repo_root: str) -> list[tuple[str, str]]:
+        """Find all files that import a given file, by resolving module paths.
+
+        Returns list of (source_qualified, file_path) tuples.
+        """
+        candidates = self.file_path_to_module(file_path, repo_root)
+        results = []
+        seen = set()
+        for mod in candidates:
+            rows = self._conn.execute(
+                "SELECT DISTINCT source_qualified, file_path FROM edges "
+                "WHERE kind = 'IMPORTS_FROM' AND target_qualified = ?",
+                (mod,),
+            ).fetchall()
+            for r in rows:
+                key = (r["source_qualified"], r["file_path"])
+                if key not in seen:
+                    seen.add(key)
+                    results.append(key)
+        return results
+
     # --- Public edge access (for visualization etc.) ---
 
     def get_all_edges(self) -> list[GraphEdge]:

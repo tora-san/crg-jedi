@@ -14,54 +14,83 @@ def run(repo_root: str | None = None, limit: int = 20, **kwargs) -> dict:
     store = GraphStore(get_db_path(root))
 
     try:
-        # Build file-level import DAG
+        # Build module-to-file mapping for resolving import targets
+        module_to_file: dict[str, str] = {}
+        file_nodes = store._conn.execute(
+            "SELECT file_path FROM nodes WHERE kind = 'File'"
+        ).fetchall()
+        for row in file_nodes:
+            fp = row["file_path"]
+            # Generate module paths from file path
+            candidates = store.file_path_to_module(fp, str(root))
+            for mod in candidates:
+                if mod not in module_to_file:
+                    module_to_file[mod] = fp
+
+        # Build file-level import DAG (file → file)
         import_graph = nx.DiGraph()
         edges = store._conn.execute(
             "SELECT DISTINCT file_path, target_qualified FROM edges WHERE kind = 'IMPORTS_FROM'"
         ).fetchall()
 
         for e in edges:
-            import_graph.add_edge(e["file_path"], e["target_qualified"])
+            source_file = e["file_path"]
+            target_mod = e["target_qualified"]
+            # Resolve module target to file path
+            target_file = module_to_file.get(target_mod)
+            if target_file and target_file != source_file:
+                import_graph.add_edge(source_file, target_file)
 
-        # Find entry points (files with no importers)
-        entry_points = [
-            n for n in import_graph.nodes()
-            if import_graph.in_degree(n) == 0
-        ]
+        if not import_graph.nodes():
+            return {
+                "status": "ok",
+                "summary": "No import dependencies found",
+                "max_depth": 0,
+                "entry_points": 0,
+                "depth_ranking": [],
+            }
 
-        # Compute longest path from each entry point
-        depths = {}
+        # Use BFS from each node to compute max depth
+        depths: dict[str, int] = {}
         for node in import_graph.nodes():
+            # Depth = length of longest path ending at this node
             try:
                 rel = str(Path(node).relative_to(root))
             except (ValueError, TypeError):
                 rel = node
 
-            # BFS to find max depth
-            max_depth = 0
-            for ep in entry_points:
-                try:
-                    paths = list(nx.all_simple_paths(import_graph, ep, node))
-                    for p in paths:
-                        max_depth = max(max_depth, len(p) - 1)
-                except (nx.NodeNotFound, nx.NetworkXNoPath):
-                    continue
+            # Use BFS backwards to find max depth (longest incoming path)
+            max_d = 0
+            visited = {node}
+            frontier = [node]
+            d = 0
+            while frontier:
+                next_f = []
+                for n in frontier:
+                    for pred in import_graph.predecessors(n):
+                        if pred not in visited:
+                            visited.add(pred)
+                            next_f.append(pred)
+                if next_f:
+                    d += 1
+                    max_d = max(max_d, d)
+                frontier = next_f
+                if d > 50:  # Safety cap
+                    break
 
-            if max_depth > 0:
-                depths[rel] = max_depth
+            if max_d > 0:
+                depths[rel] = max_d
 
         # Sort by depth descending
         ranked = sorted(depths.items(), key=lambda x: -x[1])
-
         result = [{"file": f, "depth": d} for f, d in ranked[:limit]]
-
         max_depth = ranked[0][1] if ranked else 0
 
         return {
             "status": "ok",
             "summary": f"Max dependency depth: {max_depth} layers, {len(depths)} files analyzed",
             "max_depth": max_depth,
-            "entry_points": len(entry_points),
+            "entry_points": len([n for n in import_graph.nodes() if import_graph.in_degree(n) == 0]),
             "depth_ranking": result,
         }
     finally:

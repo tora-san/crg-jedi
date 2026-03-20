@@ -18,10 +18,21 @@ def run(repo_root: str | None = None, limit: int = 50, **kwargs) -> dict:
             "SELECT * FROM edges WHERE kind = 'IMPORTS_FROM'"
         ).fetchall()
 
+        # Paths to exclude (templates, skills, vendor code)
+        _EXCLUDE_PATHS = (".agents/", ".claude/skills/", ".codex/", "conf/paper/", "conf/rookie/", "conf/whale/", ".worktrees/")
+
         unused = []
         for ie in import_edges:
             source_file = ie["file_path"]
             import_target = ie["target_qualified"]
+
+            # Skip template/skill/vendor paths
+            try:
+                rel = str(Path(source_file).relative_to(root))
+            except ValueError:
+                rel = source_file
+            if any(rel.startswith(p) for p in _EXCLUDE_PATHS):
+                continue
 
             # Check if any CALLS edge from this file references the import target
             file_call_edges = store._conn.execute(

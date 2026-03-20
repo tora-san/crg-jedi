@@ -13,13 +13,29 @@ def run(repo_root: str | None = None, **kwargs) -> dict:
     markers = ["pyproject.toml", "setup.py", "setup.cfg"]
     projects = []
 
-    # Walk directories (max 3 levels deep)
-    for depth in range(3):
-        pattern = "/".join(["*"] * (depth + 1))
+    # Paths to skip (worktrees, vendor, node_modules)
+    _SKIP_DIRS = {".worktrees", "node_modules", ".git", "__pycache__", ".venv", "venv"}
+
+    # Check root level first
+    for marker in markers:
+        if (root / marker).exists():
+            projects.append({
+                "path": ".",
+                "marker": marker,
+                "absolute_path": str(root),
+            })
+            break  # Only one root entry
+
+    # Walk subdirectories (max 3 levels deep)
+    for depth in range(1, 4):
+        pattern = "/".join(["*"] * depth)
         for marker in markers:
-            for p in root.glob(f"{pattern}/{marker}" if depth > 0 else marker):
+            for p in root.glob(f"{pattern}/{marker}"):
                 project_dir = p.parent
-                rel = str(project_dir.relative_to(root)) if project_dir != root else "."
+                rel = str(project_dir.relative_to(root))
+                # Skip vendor/worktree directories
+                if any(skip in rel.split("/") for skip in _SKIP_DIRS):
+                    continue
                 if not any(proj["path"] == rel for proj in projects):
                     projects.append({
                         "path": rel,

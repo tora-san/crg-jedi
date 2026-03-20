@@ -30,6 +30,9 @@ def run(repo_root: str | None = None, **kwargs) -> dict:
             node = store._row_to_node(r)
             all_functions.append(node)
 
+        # Paths to exclude (templates, skills, vendor code)
+        _EXCLUDE_PATHS = (".agents/", ".claude/skills/", ".codex/", "conf/paper/", "conf/rookie/", "conf/whale/", ".worktrees/")
+
         # Find functions with no incoming CALLS
         dead = []
         for func in all_functions:
@@ -37,8 +40,12 @@ def run(repo_root: str | None = None, **kwargs) -> dict:
                 continue
             if func.name in _EXCLUDE_NAMES:
                 continue
-            if func.name.startswith("_") and func.name.startswith("__"):
+            if func.name.startswith("__"):
                 continue  # dunder methods
+            # Skip template/skill/vendor paths
+            rel_path = func.file_path.replace(str(root) + "/", "")
+            if any(rel_path.startswith(p) for p in _EXCLUDE_PATHS):
+                continue
 
             callers = store.get_edges_by_target(func.qualified_name)
             has_caller = any(e.kind == "CALLS" for e in callers)

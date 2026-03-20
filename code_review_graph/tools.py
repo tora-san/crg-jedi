@@ -291,12 +291,18 @@ def query_graph(
                     edges_out.append(edge_to_dict(e))
 
         elif pattern == "importers_of":
-            # Find edges where target matches this file
+            # Find files that import this file/module by resolving module paths
             abs_target = str(root / target) if node is None else node.file_path
+            # First try direct edge lookup (for exact module path targets)
             for e in store.get_edges_by_target(abs_target):
                 if e.kind == "IMPORTS_FROM":
                     results.append({"importer": e.source_qualified, "file": e.file_path})
                     edges_out.append(edge_to_dict(e))
+            # If no direct hits, resolve file path to module paths and search
+            if not results:
+                importers = store.get_importers_of_file(abs_target, str(root))
+                for src_qn, src_file in importers:
+                    results.append({"importer": src_qn, "file": src_file})
 
         elif pattern == "children_of":
             for e in store.get_edges_by_source(qn):
@@ -306,16 +312,24 @@ def query_graph(
                         results.append(node_to_dict(child))
 
         elif pattern == "tests_for":
+            # Check for explicit TESTED_BY edges
             for e in store.get_edges_by_target(qn):
                 if e.kind == "TESTED_BY":
                     test = store.get_node(e.source_qualified)
                     if test:
                         results.append(node_to_dict(test))
+            # Infer from CALLS edges: test nodes that call the target
+            seen = {r.get("qualified_name") for r in results}
+            for e in store.get_edges_by_target(qn):
+                if e.kind == "CALLS":
+                    caller = store.get_node(e.source_qualified)
+                    if caller and caller.is_test and caller.qualified_name not in seen:
+                        results.append(node_to_dict(caller))
+                        seen.add(caller.qualified_name)
             # Also search by naming convention
             name = node.name if node else target
             test_nodes = store.search_nodes(f"test_{name}", limit=10)
             test_nodes += store.search_nodes(f"Test{name}", limit=10)
-            seen = {r.get("qualified_name") for r in results}
             for t in test_nodes:
                 if t.qualified_name not in seen and t.is_test:
                     results.append(node_to_dict(t))
