@@ -194,8 +194,13 @@ def file_hash(path: Path) -> str:
 class CodeParser:
     """Parses source files using Tree-sitter and extracts structural information."""
 
-    def __init__(self) -> None:
+    def __init__(self, fuzzy_method_resolver=None) -> None:
         self._parsers: dict[str, object] = {}
+        # Optional: callable(method_name, imported_modules) -> Optional[str]
+        # Returns qualified name if a unique match is found in the graph among
+        # modules imported by the calling file. Used for fuzzy resolution of
+        # unresolved calls in test files (where mocks defeat Jedi).
+        self._fuzzy_method_resolver = fuzzy_method_resolver
 
     def _get_parser(self, language: str):  # type: ignore[arg-type]
         if language not in self._parsers:
@@ -288,17 +293,46 @@ class CodeParser:
                 line=r.line,
             ))
 
-        # Keep unresolved calls as-is (better than nothing)
+        # Keep unresolved calls as-is, but try fuzzy resolution for test files
         resolved_sources = {(r.source_qualified, r.line) for r in resolved}
+        is_test_file = "test" in path.name.lower()
+
         for site in call_sites:
             if (site.caller_qualified_name, site.line) not in resolved_sources:
-                non_call_edges.append(EdgeInfo(
-                    kind="CALLS",
-                    source=site.caller_qualified_name,
-                    target=site.raw_call_name,
-                    file_path=str(path),
-                    line=site.line,
-                ))
+                fuzzy_target = None
+
+                # Fuzzy resolution: for test files, try matching method name
+                # against nodes from imported modules. Only fires when Jedi
+                # couldn't resolve (common with mocks/fixtures).
+                if is_test_file and "." in site.raw_call_name and self._fuzzy_method_resolver:
+                    method_name = site.raw_call_name.rsplit(".", 1)[-1]
+                    # Collect imported module names from IMPORTS edges
+                    imported_modules = [
+                        e.target for e in non_call_edges
+                        if e.kind == "IMPORTS_FROM"
+                        and e.file_path == str(path)
+                    ]
+                    if imported_modules:
+                        fuzzy_target = self._fuzzy_method_resolver(
+                            method_name, imported_modules,
+                        )
+
+                if fuzzy_target:
+                    resolved_edges.append(EdgeInfo(
+                        kind="CALLS",
+                        source=site.caller_qualified_name,
+                        target=fuzzy_target,
+                        file_path=str(path),
+                        line=site.line,
+                    ))
+                else:
+                    non_call_edges.append(EdgeInfo(
+                        kind="CALLS",
+                        source=site.caller_qualified_name,
+                        target=site.raw_call_name,
+                        file_path=str(path),
+                        line=site.line,
+                    ))
 
         return non_call_edges + resolved_edges
 

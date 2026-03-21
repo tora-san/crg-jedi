@@ -262,9 +262,45 @@ def find_dependents(store: GraphStore, file_path: str) -> list[str]:
     return list(dependents)
 
 
+def _make_fuzzy_resolver(store: GraphStore):
+    """Create a fuzzy method resolver backed by the graph store.
+
+    For unresolved calls like `mock_executor.execute()` in test files,
+    searches graph nodes for methods matching the name, constrained to
+    modules imported by the test file. Returns qualified name only if
+    exactly one candidate matches (high precision).
+    """
+    def _resolve(method_name: str, imported_modules: list[str]) -> str | None:
+        # Convert dotted module names to path segments for matching
+        # e.g. "medusa.medusa.actors.executor" -> "medusa/medusa/actors/executor"
+        import_path_segments = [m.replace(".", "/") for m in imported_modules]
+
+        # Search graph for nodes with this method name
+        candidates = store.search_nodes(method_name, limit=50)
+
+        # Filter to Function/Method nodes from imported modules
+        matches = []
+        for c in candidates:
+            if c.kind not in ("Function",):
+                continue
+            # Check if this node's file matches any imported module
+            for seg in import_path_segments:
+                if seg in c.file_path:
+                    # Exact name match (not substring) — node name must equal method_name
+                    if c.name == method_name:
+                        matches.append(c.qualified_name)
+                    break
+
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    return _resolve
+
+
 def full_build(repo_root: Path, store: GraphStore, jedi_resolver=None) -> dict:
     """Full rebuild of the entire graph."""
-    parser = CodeParser()
+    parser = CodeParser(fuzzy_method_resolver=_make_fuzzy_resolver(store))
     files = collect_all_files(repo_root)
 
     # Purge stale data from files no longer on disk
@@ -319,7 +355,7 @@ def incremental_update(
     jedi_resolver=None,
 ) -> dict:
     """Incremental update: re-parse changed + dependent files only."""
-    parser = CodeParser()
+    parser = CodeParser(fuzzy_method_resolver=_make_fuzzy_resolver(store))
     ignore_patterns = _load_ignore_patterns(repo_root)
 
     # Determine changed files
