@@ -128,6 +128,45 @@ run_extension(name="dead_code")  →  find functions with no callers
 
 ---
 
+## Using with Subagents / Agent Teams
+
+If you use Claude Code's custom agents (`.claude/agents/*.md`), subagents only have access to tools explicitly listed in their `tools:` frontmatter. **MCP tools are not included by default** — you must add them to any agent that should use crg-jedi.
+
+### Which agents need crg-jedi tools?
+
+Add crg-jedi tools to agents that do **code analysis** — auditing, dependency tracing, debugging, code review. Don't add them to pure implementation agents (they write code, not trace dependencies).
+
+| Agent role | Recommended tools |
+|-----------|-------------------|
+| Codebase auditor / reviewer | `query_graph_tool`, `run_extension_tool`, `get_impact_radius_tool` |
+| Dependency checker | `query_graph_tool`, `get_impact_radius_tool` |
+| Debugger / investigator | `query_graph_tool`, `get_impact_radius_tool` |
+| Strategy / code reviewer | `query_graph_tool`, `get_impact_radius_tool` |
+| Implementation agents | Not needed — use grep fallback |
+
+### Example: adding to an agent
+
+```yaml
+---
+name: codebase-auditor
+tools:
+  - Read
+  - Grep
+  - Glob
+  - mcp__crg-jedi__query_graph_tool
+  - mcp__crg-jedi__run_extension_tool
+  - mcp__crg-jedi__get_impact_radius_tool
+---
+```
+
+The MCP tool names follow Claude Code's naming convention: `mcp__<server>__<tool>`. The server name is whatever you used in `.mcp.json` (default: `crg-jedi`).
+
+### Graceful fallback
+
+Always instruct agents to fall back to `Grep` if crg-jedi tools are unavailable or return errors. This makes the setup optional — agents work without crg-jedi, just with less accurate call resolution for Python.
+
+---
+
 ## Supported Languages
 
 All 12+ languages from the original are supported. Jedi enhances Python specifically.
