@@ -188,6 +188,31 @@ Fall back to Grep only if crg-jedi is unavailable or returns an error.
 
 Rules in `.claude/rules/` are loaded into every session and subagent context, so this single file teaches all agents when and how to use the graph.
 
+### Step 4: Enforce on new agents (optional)
+
+To prevent new agents from silently missing crg-jedi tools, add a PostToolUse hook that warns when an agent file is written without them:
+
+```bash
+#!/bin/bash
+# .claude/hooks/enforce-agent-crg-jedi.sh
+# PostToolUse hook — warns on Write/Edit to .claude/agents/*.md without crg-jedi tools
+
+INPUT=$(cat)
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+case "$TOOL_NAME" in Write|Edit) ;; *) exit 0 ;; esac
+
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+case "$FILE_PATH" in */.claude/agents/*.md) ;; *) exit 0 ;; esac
+
+if [ -f "$FILE_PATH" ] && ! grep -q "crg-jedi" "$FILE_PATH" 2>/dev/null; then
+  echo "WARNING: Agent file missing crg-jedi tools: $(basename "$FILE_PATH")"
+  echo "Add mcp__crg-jedi__query_graph_tool + mcp__crg-jedi__get_impact_radius_tool"
+fi
+exit 0
+```
+
+Register it in `.claude/settings.json` under `PostToolUse` with matcher `Write|Edit`.
+
 ---
 
 ## Common Pitfalls
