@@ -134,15 +134,14 @@ If you use Claude Code's custom agents (`.claude/agents/*.md`), subagents only h
 
 ### Which agents need crg-jedi tools?
 
-Add crg-jedi tools to agents that do **code analysis** — auditing, dependency tracing, debugging, code review. Don't add them to pure implementation agents (they write code, not trace dependencies).
+We recommend adding crg-jedi tools to **all agents that read code** — not just analysis agents. Any agent that might need to understand code relationships (who calls what, what tests exist, blast radius) benefits from graph navigation over grep. Implementation agents use it less often but still benefit when tracing dependencies before making changes.
 
 | Agent role | Recommended tools |
 |-----------|-------------------|
 | Codebase auditor / reviewer | `query_graph_tool`, `run_extension_tool`, `get_impact_radius_tool` |
 | Dependency checker | `query_graph_tool`, `get_impact_radius_tool` |
-| Debugger / investigator | `query_graph_tool`, `get_impact_radius_tool` |
-| Strategy / code reviewer | `query_graph_tool`, `get_impact_radius_tool` |
-| Implementation agents | Not needed — use grep fallback |
+| Debugger / investigator | `query_graph_tool`, `run_extension_tool`, `get_impact_radius_tool` |
+| Implementation agents | `query_graph_tool`, `get_impact_radius_tool` |
 
 ### Example: adding to an agent
 
@@ -164,6 +163,71 @@ The MCP tool names follow Claude Code's naming convention: `mcp__<server>__<tool
 ### Graceful fallback
 
 Always instruct agents to fall back to `Grep` if crg-jedi tools are unavailable or return errors. This makes the setup optional — agents work without crg-jedi, just with less accurate call resolution for Python.
+
+### Step 3: Add a "prefer crg-jedi" rule
+
+**This is the step most people miss.** Adding tools to agents is necessary but not sufficient — agents default to familiar patterns (grep) unless told to prefer the graph tools.
+
+Create a rule file at `.claude/rules/prefer-crg-jedi.md`:
+
+```markdown
+# Prefer crg-jedi Over Grep for Code Navigation
+
+When you need to understand code relationships — who calls a function,
+what tests cover it, what a change breaks — use crg-jedi MCP tools first.
+Fall back to Grep only if crg-jedi is unavailable or returns an error.
+
+| Need | Tool |
+|------|------|
+| Who calls this function? | `query_graph_tool(pattern="callers_of", target="File.py::Class.method")` |
+| What tests cover this? | `query_graph_tool(pattern="tests_for", target="File.py::Class.method")` |
+| Blast radius of changes | `get_impact_radius_tool(changed_files=["a.py", "b.py"])` |
+| Untested functions | `run_extension_tool(name="test_gaps")` |
+| Over-coupled modules | `run_extension_tool(name="coupling")` |
+```
+
+Rules in `.claude/rules/` are loaded into every session and subagent context, so this single file teaches all agents when and how to use the graph.
+
+---
+
+## Common Pitfalls
+
+Lessons learned from deploying crg-jedi across a 32-agent fleet:
+
+### 1. Tools available ≠ tools used
+
+Adding MCP tools to agent YAML gives agents *permission* to call them, but agents default to grep unless instructed otherwise. The "prefer crg-jedi" rule (above) closes this gap. Without it, we observed zero crg-jedi calls across multiple blitz sessions and deep audits despite tools being available.
+
+### 2. Usage logging requires centralized paths
+
+If you use git worktrees (common for parallel agent sessions), any PostToolUse logger hook must write to the **main repo root**, not `CLAUDE_PROJECT_DIR` (which resolves to the worktree). Use `git rev-parse --path-format=absolute --git-common-dir` to resolve the main repo:
+
+```bash
+MAIN_REPO="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')"
+LOG_DIR="$MAIN_REPO/.claude/dx-metrics"
+```
+
+Without this, logs scatter across worktrees and get deleted on cleanup — making it look like crg-jedi is never used when it might be.
+
+### 3. Turn-constrained agents benefit most
+
+Agents with tight turn budgets (e.g., 25 turns for auditors) see the biggest gains. A single `callers_of` query replaces 3-5 grep-read-grep cycles. In our deep-audit, Domain 22 (Structural Analysis) ran out of turns twice with zero findings when using grep. With crg-jedi tools available, the same analysis fits comfortably in budget.
+
+### 4. Node naming matters
+
+Queries work best with fully-qualified names including the file path:
+```
+/path/to/repo/module/file.py::ClassName.method_name
+```
+
+Shorter forms like `ClassName.method` work but may return `status: "ambiguous"` with multiple candidates. The tool will list candidates to help you pick the right one.
+
+### 5. Graph freshness
+
+The graph is a point-in-time snapshot. After many commits, results may be stale. Options:
+- **SessionStart hook**: Auto-rebuild when >20 commits behind (recommended)
+- **Manual**: `build_or_update_graph_tool()` before querying
+- **Lazy**: Accept staleness for read-only analysis — off-by-a-few-commits is usually fine
 
 ---
 
